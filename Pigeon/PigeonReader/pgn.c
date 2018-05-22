@@ -1,6 +1,12 @@
 #include "pgn.h"
 #include <stdlib.h>
 
+char piece_notations[] = " PNBRQK";
+char file_notations[] = "abcdefgh";
+char rank_notations[] = "12345678";
+char castlingK_notation[] = "O-O";
+char castlingQ_notation[] = "O-O-O";
+
 /// <summary>
 /// pgn_new_tree - create a new (empty) game_tree
 /// </summary>

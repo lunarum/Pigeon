@@ -5,8 +5,10 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+#ifdef _DEBUG
 //#define DEBUG_PRINT_TOKENS 1
-
+#define DEBUG_PRINT_PLY 1
+#endif
 
 #define ERROR_BUFFER 256
 
@@ -223,36 +225,181 @@ bool fetch_tags(struct PGN_game *game) {
 	return true;
 }
 
-bool fetch_moves(struct PGN_game *game) {
+const char *parse_ply_piece(struct PGN_ply *ply, const char *str) {
+	const char *index;
+
+	if (str == NULL || !*str)
+		return NULL;
+
+	if ((index = strchr(piece_notations, *str)) != NULL) {	// Does ply start with a valid piece letter?
+		ply->piece = index - piece_notations;
+		++str;
+	}
+	else {
+		if (strchr(file_notations, *str) == NULL)			// Then does ply not start with a file letter i.e. omitting the piece info?
+			return NULL;
+		// Piece info is missing = > it's a pawn!
+		ply->piece = PGN_PIECE_PAWN;
+	}
+	return str;
+}
+
+const char *parse_ply_square(struct PGN_ply *ply, const char *str) {
+	const char *index;
+
+	if (str == NULL || !*str)
+		return NULL;
+
+	// A capture symbol before square?
+	if (*str == PGN_TAG_CAPTURE) {
+		ply->capture = 1;
+		if (!*(++str))
+			return NULL;
+	}
+	if ((index = strchr(file_notations, *str)) == NULL)	// Does ply start with a valid file letter?
+		return NULL;
+	ply->from_file = ply->to_file = index - file_notations;
+	if (!*(++str))
+		return NULL;
+	if ((index = strchr(rank_notations, *str)) == NULL)	// Followed by a valid rank number?
+		return NULL;
+	ply->from_rank = ply->to_rank = index - rank_notations;
+	++str;
+
+	return str;
+}
+
+const char *parse_ply_promotion_piece(struct PGN_ply *ply, const char *str) {
+	const char *index;
+
+	if (str == NULL || !*str)
+		return NULL;
+
+	if ((index = strchr(piece_notations, *str)) == NULL)	// Does ply not start with a valid piece letter?
+		return NULL;
+	ply->promotion = index - piece_notations;
+	++str;
+	if (ply->promotion < PGN_PIECE_KNIGHT || ply->promotion > PGN_PIECE_QUEEN)
+		return NULL;
+	return str;
+}
+
+struct PGN_ply * fetch_ply(struct PGN_game *game) {
 	cstring value;
+	const char *str;
+	struct PGN_ply *ply;
+
+	// White move
+	if (!match_token(PGN_TOKEN_SYMBOL, &value, NULL))
+		return NULL;
+	ply = pgn_add_ply(game);
+	str = cstring_get(value);
+	if (strcmp(PGN_TAG_CASTLING_KING, str) == 0) {
+		ply->piece = PGN_PIECE_KING_ROOK;
+		ply->to_file = 6;
+	}
+	else if (strcmp(PGN_TAG_CASTLING_QUEEN, str) == 0) {
+		ply->piece = PGN_PIECE_KING_ROOK;
+		ply->to_file = 2;
+	}
+	else {
+		if ((str = parse_ply_piece(ply, str)) == NULL)
+			return NULL;
+		if ((str = parse_ply_square(ply, str)) == NULL)
+			return NULL;
+		if (*str) {	// more to come?
+			if (*str == PGN_TAG_PROMOTION) {
+				ply->promotion = PGN_PIECE_QUEEN;
+				if (!*(++str))
+					return NULL;
+				if ((str = parse_ply_promotion_piece(ply, str)) == NULL)
+					return NULL;
+			}
+			if (*str == PGN_TAG_CHECK) {
+				ply->check = 1;
+				++str;
+			}
+			else if (*str == PGN_TAG_CHECKMATE) {
+				ply->check = 1;
+				ply->checkmate = 1;
+				++str;
+			}
+		}
+	}
+
+#ifdef DEBUG_PRINT_PLY
+	if (ply->piece == PGN_PIECE_KING_ROOK) {
+		if (ply->to_file == 6)
+			printf(PGN_TAG_CASTLING_KING);
+		else if (ply->to_file == 2)
+			printf(PGN_TAG_CASTLING_QUEEN);
+	} else {
+		if (ply->piece > PGN_PIECE_PAWN)
+			putchar(piece_notations[ply->piece]);
+		if (ply->from_file != ply->to_file)
+			putchar(file_notations[ply->from_file]);
+		if (ply->from_rank != ply->to_rank)
+			putchar(rank_notations[ply->from_rank]);
+		if (ply->capture)
+			putchar(PGN_TAG_CAPTURE);
+		if (ply->promotion) {
+			putchar(PGN_TAG_PROMOTION);
+			putchar(piece_notations[ply->promotion]);
+		}
+		putchar(file_notations[ply->to_file]);
+		putchar(rank_notations[ply->to_rank]);
+		if (ply->check)
+			putchar(PGN_TAG_CHECK);
+		if (ply->checkmate)
+			putchar(PGN_TAG_CHECKMATE);
+	}
+	putchar(' ');
+#endif
+
+	return ply;
+}
+
+bool fetch_moves(struct PGN_game *game) {
 	struct PGN_ply *ply;
 
 	while (token != PGN_TOKEN_EOF) {
+		// Move number found?
 		if (token == PGN_TOKEN_INTEGER) {
-			// Move number found; skip this number and the required following period
+			// Skip this number and...
 			if (!match_token(PGN_TOKEN_INTEGER, NULL, NULL))
 				return false;
+			// ...the required following period
 			if (!match_token(PGN_TOKEN_PERIOD, NULL, NULL))
 				return false;
 		}
-		if (token == PGN_TOKEN_ASTERIX) // result (unnkown) is last ply of this game
-			break;
+
+		if (token == PGN_TOKEN_ASTERIX) // An asterix parsed?
+			break;	// Then the end of the game is detected.
+
+		// Does another type of result follows?
+		if(token == PGN_TOKEN_SYMBOL && convert_result(game, token_value))
+			break;	// Then the end of the game is detected.
+
+#ifdef DEBUG_PRINT_PLY
+		printf("%d.", 1+(int)(game->plies / 2));
+#endif
 		// White move
-		if (!match_token(PGN_TOKEN_SYMBOL, &value, NULL))
+		ply = fetch_ply(game);
+		if (ply == NULL)
 			return false;
-		// Not a move but a result?
-		if (convert_result(game, value))
-			break;
-		ply = pgn_add_ply(game);
-		if (token == PGN_TOKEN_ASTERIX) // result (unnkown) is last ply of this game
-			break;
+		ply->white = 1;
+
+		// Does another type of result follows?
+		if (token == PGN_TOKEN_SYMBOL && convert_result(game, token_value))
+			break;	// Then the end of the game is detected.
+
 		// Black move
-		if (!match_token(PGN_TOKEN_SYMBOL, &value, NULL))
+		ply = fetch_ply(game);
+		if (ply == NULL)
 			return false;
-		// Not a move but a result?
-		if (convert_result(game, value))
-			break;
-		ply = pgn_add_ply(game);
+#ifdef DEBUG_PRINT_PLY
+		putchar('\n');
+#endif
 	}
 
 	return true;
