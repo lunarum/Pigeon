@@ -19,9 +19,9 @@ int current_line;
 char error_message[ERROR_BUFFER];
 enum PGN_READER_RESULT result;
 
-enum PGN_TOKEN token = PGN_TOKEN_NONE;
-cstring token_value;
-unsigned int token_integer_value;
+enum PGN_TOKEN next_token = PGN_TOKEN_NONE;
+cstring next_token_word;
+unsigned int next_token_number;
 
 cstring symbol_event;
 cstring symbol_site;
@@ -71,9 +71,9 @@ bool read_token() {
 	char c, buffer[PGN_MAX_LINE + 1];
 	int n;
 
-	token = PGN_TOKEN_NONE;
-	token_value = CSTRING_NULL;
-	token_integer_value = 0;
+	next_token = PGN_TOKEN_NONE;
+	next_token_word = CSTRING_NULL;
+	next_token_number = 0;
 
 	// Skip whitespace
 	do {
@@ -84,23 +84,23 @@ bool read_token() {
 
 	switch (c) {
 	case EOF:
-		token = PGN_TOKEN_EOF;
+		next_token = PGN_TOKEN_EOF;
 		result = PGN_READER_EOF;
 		return true;
 	case PGN_TAG_TAG_START:
-		token = PGN_TOKEN_TAG_START;
+		next_token = PGN_TOKEN_TAG_START;
 		break;
 	case PGN_TAG_TAG_END:
-		token = PGN_TOKEN_TAG_END;
+		next_token = PGN_TOKEN_TAG_END;
 		break;
 	case PGN_TAG_PERIOD:
-		token = PGN_TOKEN_PERIOD;
+		next_token = PGN_TOKEN_PERIOD;
 		break;
 	case PGN_TAG_ASTERIX:
-		token = PGN_TOKEN_ASTERIX;
+		next_token = PGN_TOKEN_ASTERIX;
 		break;
 	case PGN_TAG_STRING:
-		token = PGN_TOKEN_STRING;
+		next_token = PGN_TOKEN_STRING;
 		c = read_char();
 		for (n = 0; n < PGN_MAX_LINE && c != EOF && c != PGN_TAG_STRING; ++n, c = read_char()) {
 			if (c == PGN_TAG_STRING_ESCAPE) {
@@ -109,22 +109,22 @@ bool read_token() {
 			buffer[n] = c;
 		}
 		buffer[n] = 0;
-		token_value = cstring_add(buffer);
+		next_token_word = cstring_add(buffer);
 		break;
 	default:
 		if (isalnum(c)) {
-			token = isdigit(c) ? PGN_TOKEN_INTEGER : PGN_TOKEN_SYMBOL;
+			next_token = isdigit(c) ? PGN_TOKEN_INTEGER : PGN_TOKEN_SYMBOL;
 			for (n = 0; n < PGN_MAX_LINE && c != EOF && (isalnum(c) || strchr("_+#=:-/", c) != NULL); ++n, c = read_char()) {
 				buffer[n] = c;
 				if (isdigit(c))
-					token_integer_value = token_integer_value * 10 + (c - '0');
+					next_token_number = next_token_number * 10 + (c - '0');
 				else
-					token = PGN_TOKEN_SYMBOL;
+					next_token = PGN_TOKEN_SYMBOL;
 			}
 			buffer[n] = 0;
-			if (token == PGN_TOKEN_SYMBOL) {
-				token_value = cstring_add(buffer);
-				token_integer_value = 0;
+			if (next_token == PGN_TOKEN_SYMBOL) {
+				next_token_word = cstring_add(buffer);
+				next_token_number = 0;
 			}
 				
 			saved_character = c;
@@ -137,11 +137,11 @@ bool read_token() {
 	}
 
 #ifdef DEBUG_PRINT_TOKENS
-	printf("token(%d)", token);
-	if(token_value != CSTRING_NULL)
-		printf(" string(%s)", cstring_get(token_value));
-	if(token_integer_value != 0)
-		printf(" int(%d)", token_integer_value);
+	printf("token(%d)", next_token);
+	if(next_token_word != CSTRING_NULL)
+		printf(" string(%s)", cstring_get(next_token_word));
+	if(next_token_number != 0)
+		printf(" int(%d)", next_token_number);
 	putchar('\n');
 #endif
 
@@ -149,15 +149,15 @@ bool read_token() {
 }
 
 bool match_token(enum PGN_TOKEN tok, cstring *value_str, int *value_int) {
-	if (token != tok) {
+	if (next_token != tok) {
 		result = PGN_READER_ERROR_SYNTAX;
 		sprintf_s(error_message, ERROR_BUFFER, "SYNTAX ERROR: token %d expected", (int)tok);
 		return false;
 	}
 	if (value_str != NULL)
-		*value_str = token_value;
+		*value_str = next_token_word;
 	if (value_int != NULL)
-		*value_int = token_integer_value;
+		*value_int = next_token_number;
 	return read_token();
 }
 
@@ -178,7 +178,7 @@ bool convert_result(struct PGN_game *game, cstring value) {
 bool fetch_tags(struct PGN_game *game) {
 	cstring value;
 
-	while (token == PGN_TOKEN_TAG_START) {
+	while (next_token == PGN_TOKEN_TAG_START) {
 		if (match_token(PGN_TOKEN_TAG_START, &value, NULL)) {
 			if (match_token(PGN_TOKEN_SYMBOL, &value, NULL)) {
 				if (value == symbol_event) {
@@ -231,8 +231,8 @@ const char *parse_ply_piece(struct PGN_ply *ply, const char *str) {
 	if (str == NULL || !*str)
 		return NULL;
 
-	if ((index = strchr(piece_notations, *str)) != NULL) {	// Does ply start with a valid piece letter?
-		ply->piece = index - piece_notations;
+	if ((index = strchr(piece_notations + PGN_PIECE_PAWN, *str)) != NULL) {	// Does ply start with a valid piece letter?
+		ply->piece = index - piece_notations + PGN_PIECE_PAWN;
 		++str;
 	}
 	else {
@@ -246,25 +246,45 @@ const char *parse_ply_piece(struct PGN_ply *ply, const char *str) {
 
 const char *parse_ply_square(struct PGN_ply *ply, const char *str) {
 	const char *index;
+	bool from_file_detected = false, from_rank_detected = false;
+
+	// [a-h]?[1-8]?[x]?[a-h][1-8]
 
 	if (str == NULL || !*str)
 		return NULL;
 
+	if (((index = strchr(file_notations, *str)) != NULL) && *index) { // Valid file letter?
+		from_file_detected = true;
+		ply->from_file = ply->to_file = index - file_notations;
+		++str;
+	}
+
+	if (((index = strchr(rank_notations, *str)) != NULL) && *index) { // Valid rank number?
+		from_rank_detected = true;
+		ply->from_rank = ply->to_rank = index - rank_notations;
+		++str;
+			//return (from_file_detected && from_rank_detected) ? str : NULL;
+	}
+
 	// A capture symbol before square?
 	if (*str == PGN_TAG_CAPTURE) {
 		ply->capture = 1;
-		if (!*(++str))
-			return NULL;
+		++str;
 	}
-	if ((index = strchr(file_notations, *str)) == NULL)	// Does ply start with a valid file letter?
-		return NULL;
-	ply->from_file = ply->to_file = index - file_notations;
-	if (!*(++str))
-		return NULL;
-	if ((index = strchr(rank_notations, *str)) == NULL)	// Followed by a valid rank number?
-		return NULL;
-	ply->from_rank = ply->to_rank = index - rank_notations;
-	++str;
+
+	if (((index = strchr(file_notations, *str)) != NULL) && *index) {	// Valid file letter?
+		ply->to_file = index - file_notations;
+		if (!from_file_detected)
+			ply->from_file = ply->to_file;
+		++str;
+	}
+
+	if (((index = strchr(rank_notations, *str)) != NULL) && *index) {	// No valid rank number?
+		ply->to_rank = index - rank_notations;
+		if (!from_rank_detected)
+			ply->from_rank = ply->to_rank;
+		++str;
+	}
 
 	return str;
 }
@@ -275,9 +295,9 @@ const char *parse_ply_promotion_piece(struct PGN_ply *ply, const char *str) {
 	if (str == NULL || !*str)
 		return NULL;
 
-	if ((index = strchr(piece_notations, *str)) == NULL)	// Does ply not start with a valid piece letter?
+	if ((index = strchr(piece_notations + PGN_PIECE_KNIGHT, *str)) == NULL)	// Does ply not start with a valid piece letter?
 		return NULL;
-	ply->promotion = index - piece_notations;
+	ply->promotion = index - piece_notations + PGN_PIECE_KNIGHT;
 	++str;
 	if (ply->promotion < PGN_PIECE_KNIGHT || ply->promotion > PGN_PIECE_QUEEN)
 		return NULL;
@@ -335,7 +355,7 @@ struct PGN_ply * fetch_ply(struct PGN_game *game) {
 			printf(PGN_TAG_CASTLING_QUEEN);
 	} else {
 		if (ply->piece > PGN_PIECE_PAWN)
-			putchar(piece_notations[ply->piece]);
+			putchar(piece_notations[ply->piece - PGN_PIECE_PAWN]);
 		if (ply->from_file != ply->to_file)
 			putchar(file_notations[ply->from_file]);
 		if (ply->from_rank != ply->to_rank)
@@ -344,7 +364,7 @@ struct PGN_ply * fetch_ply(struct PGN_game *game) {
 			putchar(PGN_TAG_CAPTURE);
 		if (ply->promotion) {
 			putchar(PGN_TAG_PROMOTION);
-			putchar(piece_notations[ply->promotion]);
+			putchar(piece_notations[ply->promotion - PGN_PIECE_PAWN]);
 		}
 		putchar(file_notations[ply->to_file]);
 		putchar(rank_notations[ply->to_rank]);
@@ -362,9 +382,9 @@ struct PGN_ply * fetch_ply(struct PGN_game *game) {
 bool fetch_moves(struct PGN_game *game) {
 	struct PGN_ply *ply;
 
-	while (token != PGN_TOKEN_EOF) {
+	while (next_token != PGN_TOKEN_EOF) {
 		// Move number found?
-		if (token == PGN_TOKEN_INTEGER) {
+		if (next_token == PGN_TOKEN_INTEGER) {
 			// Skip this number and...
 			if (!match_token(PGN_TOKEN_INTEGER, NULL, NULL))
 				return false;
@@ -373,11 +393,11 @@ bool fetch_moves(struct PGN_game *game) {
 				return false;
 		}
 
-		if (token == PGN_TOKEN_ASTERIX) // An asterix parsed?
+		if (next_token == PGN_TOKEN_ASTERIX) // An asterix parsed?
 			break;	// Then the end of the game is detected.
 
 		// Does another type of result follows?
-		if(token == PGN_TOKEN_SYMBOL && convert_result(game, token_value))
+		if(next_token == PGN_TOKEN_SYMBOL && convert_result(game, next_token_word))
 			break;	// Then the end of the game is detected.
 
 #ifdef DEBUG_PRINT_PLY
@@ -390,7 +410,7 @@ bool fetch_moves(struct PGN_game *game) {
 		ply->white = 1;
 
 		// Does another type of result follows?
-		if (token == PGN_TOKEN_SYMBOL && convert_result(game, token_value))
+		if (next_token == PGN_TOKEN_SYMBOL && convert_result(game, next_token_word))
 			break;	// Then the end of the game is detected.
 
 		// Black move
@@ -443,9 +463,9 @@ struct PGN_tree *pgn_reader(const char*filename) {
 
 	if (read_token()) {
 		for (;;) {
-			if (token == PGN_TOKEN_EOF)
+			if (next_token == PGN_TOKEN_EOF)
 				break;
-			else if (token == PGN_TOKEN_TAG_START) {
+			else if (next_token == PGN_TOKEN_TAG_START) {
 				struct PGN_game *game = pgn_add_game(game_tree);
 				if (game == NULL) {
 					result = PGN_READER_ERROR_MEMORY;

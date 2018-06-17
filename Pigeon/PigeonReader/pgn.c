@@ -1,7 +1,7 @@
 #include "pgn.h"
 #include <stdlib.h>
 
-char piece_notations[] = " PNBRQK";
+char piece_notations[] = "PNBRQK";
 char file_notations[] = "abcdefgh";
 char rank_notations[] = "12345678";
 char castlingK_notation[] = "O-O";
